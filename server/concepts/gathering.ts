@@ -6,8 +6,6 @@ export interface GatheringDoc extends BaseDoc {
   title: string;
   description: string;
   creator: ObjectId;
-  hosts: ObjectId[];
-  canceled?: boolean;
   acceptors?: ObjectId[];
   posts?: Array<ObjectId>;
 }
@@ -45,7 +43,7 @@ export default class GatheringConcept {
 
   async create(creator: ObjectId, title: string, description: string) {
     await this.isAvailableTitle(creator, title);
-    const _id = await this.gatherings.createOne({ creator, title, description, hosts: [creator] });
+    const _id = await this.gatherings.createOne({ creator, title, description });
     return { msg: "Gathering created successfully!", gathering: await this.gatherings.readOne({ _id }) };
   }
 
@@ -59,46 +57,7 @@ export default class GatheringConcept {
     return { msg: "Gathering deleted!" };
   }
 
-  async cancel(_id: ObjectId) {
-    const gathering = await this.gatherings.readOne({ _id });
-    if (!gathering) {
-      throw new NotFoundError(`Gathering ${_id} does not exist!`);
-    }
-    if (gathering.canceled) {
-      throw new GatheringAlreadyCanceledError(_id);
-    }
-
-    const update = JSON.parse(`{ $set: { "canceled" : true } }`);
-
-    this.sanitizeUpdate(update);
-    await this.gatherings.updateOne({ _id }, update);
-    return { msg: "Gathering canceled!" };
-  }
-
   async update(_id: ObjectId, update: Partial<GatheringDoc>) {
-    this.sanitizeUpdate(update);
-    await this.gatherings.updateOne({ _id }, update);
-    return { msg: "Gathering successfully updated!" };
-  }
-
-  async addHosts(_id: ObjectId, users: ObjectId[]) {
-    const gathering = await this.gatherings.readOne({ _id });
-    if (!gathering) {
-      throw new NotFoundError(`Post ${_id} does not exist!`);
-    }
-
-    const newHosts = gathering.hosts.slice(); //might want to make this change in posts too
-    for (const user of users) {
-      if (this.hasItem(user, gathering.hosts)) {
-        throw new GatheringHostAlreadyExistsError(user, _id);
-      } else {
-        newHosts.push(user);
-      }
-    }
-
-    //might need to fix this! Perhaps need to use array instead
-    const update = JSON.parse(`{ $set: { "hosts" : ${newHosts} } }`);
-
     this.sanitizeUpdate(update);
     await this.gatherings.updateOne({ _id }, update);
     return { msg: "Gathering successfully updated!" };
@@ -125,7 +84,7 @@ export default class GatheringConcept {
     return { msg: "Gathering successfully updated!" };
   }
 
-  async removeAcceptors(_id: ObjectId, user: ObjectId) {
+  async removeAcceptor(_id: ObjectId, user: ObjectId) {
     const gathering = await this.gatherings.readOne({ _id });
     if (!gathering) {
       throw new NotFoundError(`Post ${_id} does not exist!`);
@@ -150,19 +109,19 @@ export default class GatheringConcept {
 
   async canView(user: ObjectId, _id: ObjectId) {
     try {
-      await this.isHost(user, _id);
+      await this.isCreator(user, _id);
     } catch (GatheringHostNotMatchError) {
       await this.isAcceptor(user, _id);
     }
   }
 
-  async isHost(user: ObjectId, _id: ObjectId) {
+  async isCreator(user: ObjectId, _id: ObjectId) {
     const gathering = await this.gatherings.readOne({ _id });
     if (!gathering) {
       throw new NotFoundError(`Gathering ${_id} does not exist!`);
     }
-    if (!this.hasItem(user, gathering.hosts)) {
-      throw new GatheringHostNotMatchError(user, _id);
+    if (gathering.creator.toString() !== user.toString()) {
+      throw new GatheringCreatorNotMatchError(user, _id);
     }
   }
 
@@ -189,6 +148,14 @@ export default class GatheringConcept {
       sort: { dateUpdated: -1 },
     });
     return invites;
+  }
+
+  async inviteMany(from: ObjectId, to: ObjectId[], gathering: ObjectId) {
+    for (const guest of to) {
+      await this.canInvite(guest, gathering);
+      await this.invites.createOne({ gathering, from, to: guest, status: "pending" });
+    }
+    return { msg: "Sent invites!" };
   }
 
   async invite(from: ObjectId, to: ObjectId, gathering: ObjectId) {
@@ -221,7 +188,7 @@ export default class GatheringConcept {
     if (invite.status === "declined") {
       throw new AlreadyDeclinedInviteError(to, gathering);
     } else if (invite.status === "accepted") {
-      await this.removeAcceptors(gathering, to);
+      await this.removeAcceptor(gathering, to);
     }
     await this.removeInvite(invite.from, to, gathering);
 
@@ -230,7 +197,7 @@ export default class GatheringConcept {
     return { msg: "Declined invite." };
   }
 
-  async addPost(_id: ObjectId, post: ObjectId) {
+  async associatePost(_id: ObjectId, post: ObjectId) {
     const gathering = await this.gatherings.readOne({ _id });
     if (!gathering) {
       throw new NotFoundError(`Gathering ${_id} does not exist!`);
@@ -338,12 +305,12 @@ export class GatheringHostAlreadyExistsError extends NotAllowedError {
   }
 }
 
-export class GatheringHostNotMatchError extends NotAllowedError {
+export class GatheringCreatorNotMatchError extends NotAllowedError {
   constructor(
-    public readonly user: ObjectId,
+    public readonly creator: ObjectId,
     public readonly _id: ObjectId,
   ) {
-    super("{0} is not a host of gathering {1}!", user, _id);
+    super("{0} is not the creator of gathering {1}!", creator, _id);
   }
 }
 

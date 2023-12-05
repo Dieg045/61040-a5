@@ -2,7 +2,7 @@ import { ObjectId } from "mongodb";
 
 import { Router, getExpressRouter } from "./framework/router";
 
-import { Bookmark, Friend, Gathering, Message, Post, User, WebSession } from "./app";
+import { AccessList, Bookmark, Friend, Gathering, Message, Post, User, WebSession } from "./app";
 import { BookmarkDoc } from "./concepts/bookmark";
 import { GatheringDoc } from "./concepts/gathering";
 import { PostDoc, PostOptions } from "./concepts/post";
@@ -63,13 +63,12 @@ class Routes {
   async getAllPosts(session: WebSessionDoc) {
     const u_id = WebSession.getUser(session);
 
-    let posts: PostDoc[] = [];
-    for (const friend of await Friend.getFriends(u_id)) {
-      const filter1 = { author: friend, options: null };
-      const filter2 = { author: friend, options: { restrictedUsers: { $nin: u_id } } };
-      posts = posts.concat(await Post.getPosts({ $or: [filter1, filter2] }));
-    }
-    return await Responses.posts(posts);
+    const friends = await Friend.getFriends(u_id);
+    const query = { author: { $in: friends } };
+    const posts = await Post.getPosts(query);
+    const filteredPosts = posts.filter(async (post) => await AccessList.canView(u_id, post._id));
+
+    return await Responses.posts(filteredPosts);
   }
 
   @Router.get("/posts/:author")
@@ -77,46 +76,36 @@ class Routes {
     const author_id = (await User.getUserByUsername(author))._id;
     const u_id = WebSession.getUser(session);
 
-    let posts;
-    if (author_id.toString() === u_id.toString()) {
-      posts = await Post.getByAuthor(author_id);
-    } else {
-      await Friend.isFriend(author_id, u_id);
-      const filter1 = { author: author_id, options: null };
-      const filter2 = { author: author_id, options: { restrictedUsers: { $nin: u_id } } };
-      posts = await Post.getPosts({ $or: [filter1, filter2] });
-    }
+    const posts = await Post.getPosts({ author: author_id });
+    const filteredPosts = posts.filter(async (post) => await AccessList.canView(u_id, post._id));
 
-    return await Responses.posts(posts);
+    return await Responses.posts(filteredPosts);
   }
 
   @Router.post("/posts") //done
   async createPost(session: WebSessionDoc, content: string, options?: PostOptions) {
     const user = WebSession.getUser(session);
     const created = await Post.create(user, content, options);
+    const friends = await Friend.getFriends(user);
+    if (created && created.post) {
+      await AccessList.addItem(created.post._id, user, [], friends);
+    }
     return { msg: created.msg, post: await Responses.post(created.post) };
   }
 
   @Router.patch("/posts/:_id") //done
-  async updatePost(session: WebSessionDoc, _id: ObjectId, update?: Partial<PostDoc>, restrictedUser?: string) {
+  async updatePost(session: WebSessionDoc, _id: ObjectId, update: Partial<PostDoc>) {
     const user = WebSession.getUser(session);
     await Post.isAuthor(user, _id);
-    let result;
-    if (update) {
-      result = await Post.update(_id, update);
-    }
-    if (restrictedUser) {
-      const restrictedUserId = (await User.getUserByUsername(restrictedUser))._id;
-      result = await Post.addRestrictedUser(restrictedUserId, _id);
-    }
-    return result;
+    return await Post.update(_id, update);
   }
 
   @Router.delete("/posts/:_id") //done
   async deletePost(session: WebSessionDoc, _id: ObjectId) {
     const user = WebSession.getUser(session);
     await Post.isAuthor(user, _id);
-    return Post.delete(_id);
+    await AccessList.deleteItem(_id);
+    return await Post.delete(_id);
   }
 
   @Router.get("/friends")
@@ -129,6 +118,8 @@ class Routes {
   async removeFriend(session: WebSessionDoc, friend: string) {
     const user = WebSession.getUser(session);
     const friendId = (await User.getUserByUsername(friend))._id;
+    await AccessList.removeAccessAllItems(friendId, user);
+    await AccessList.removeAccessAllItems(user, friendId);
     return await Friend.removeFriend(user, friendId);
   }
 
@@ -156,6 +147,8 @@ class Routes {
   async acceptFriendRequest(session: WebSessionDoc, from: string) {
     const user = WebSession.getUser(session);
     const fromId = (await User.getUserByUsername(from))._id;
+    await AccessList.setToViewerAllItems(fromId, user);
+    await AccessList.setToViewerAllItems(user, fromId);
     return await Friend.acceptRequest(fromId, user);
   }
 
@@ -233,7 +226,8 @@ class Routes {
   @Router.delete("/gathering/:_id")
   async deleteGathering(session: WebSessionDoc, _id: ObjectId) {
     const user = WebSession.getUser(session);
-    await Gathering.isHost(user, _id);
+    await Gathering.isCreator(user, _id);
+    await AccessList.deleteItem(_id);
     return Gathering.delete(_id);
   }
 
@@ -241,7 +235,7 @@ class Routes {
   @Router.patch("/gathering/:_id")
   async updateGathering(session: WebSessionDoc, _id: ObjectId, update: Partial<GatheringDoc>, invitee?: string) {
     const user = WebSession.getUser(session);
-    await Gathering.isHost(user, _id);
+    await Gathering.isCreator(user, _id);
     if (invitee) {
       const inviteeId = (await User.getUserByUsername(invitee))._id;
       await Gathering.invite(user, inviteeId, _id);
@@ -262,7 +256,7 @@ class Routes {
     const user = WebSession.getUser(session);
     const toId = (await User.getUserByUsername(to))._id;
     const gatheringId = new ObjectId(gathering);
-    await Gathering.isHost(user, gatheringId);
+    await Gathering.isCreator(user, gatheringId);
     const created = await Gathering.invite(user, toId, gatheringId);
     return { msg: created.msg, invite: await Responses.invite(created.invite) };
   }
@@ -272,6 +266,7 @@ class Routes {
   async acceptInvitation(session: WebSessionDoc, gathering: string) {
     const user = WebSession.getUser(session);
     const gatheringId = new ObjectId(gathering);
+    await AccessList.setToViewer(gatheringId, user);
     return await Gathering.acceptInvite(user, gatheringId);
   }
 

@@ -1,3 +1,4 @@
+import AccessListConcept from "./concepts/accessList";
 import BookmarkConcept from "./concepts/bookmark";
 import FriendConcept from "./concepts/friend";
 import GatheringConcept from "./concepts/gathering";
@@ -14,3 +15,4 @@ export const Friend = new FriendConcept();
 export const Bookmark = new BookmarkConcept();
 export const Gathering = new GatheringConcept();
 export const Message = new MessageConcept();
+export const AccessList = new AccessListConcept();
